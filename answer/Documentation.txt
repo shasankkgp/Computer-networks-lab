@@ -1,0 +1,25 @@
+*****Documentation******
+
+This is the intermediate version of the KTP socket assignment.
+
+This is the Documentation for the simulation of realiability of the UDP sockets.
+
+Accomplishes:
+    1. This Accomplishes a reliable tranfer of file over UDP.
+
+
+This simulates a window size 1 and;
+
+k_socket:   This makes a socket.
+k_bind:     This binds the socket.
+k_sendto:   This sends the packet to destination. 
+k_recvfrom: This recv from the remote IP.
+k_close:    This closes the socket.
+
+Usage:
+    1. first call the ---- make all ---- command;
+    2. then call the ---- make run_user2 ---- command;
+    3. then call the ---- make run_user1 ---- command;
+
+
+Configuration make changes to the make file to make the changes to the inputfile and outputfile and source IP,port and remote IP,port to test the socket system.
