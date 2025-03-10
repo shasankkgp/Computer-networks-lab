@@ -3,215 +3,288 @@
 
 #include "ktp.h"
 
-int k_socket(int __domain, int __type, int __protocol) {
-
+/**
+ * Creates a new KTP socket
+ * 
+ * @param domain    Address domain (e.g., AF_INET)
+ * @param type      Socket type (should be SOCK_KTP)
+ * @param protocol  Protocol (usually 0)
+ * @return          Socket ID on success, -1 on failure
+ */
+int k_socket(int domain, int type, int protocol) {
     // Check for free space in shared memory
-    int sockid = -1;
+    int socket_id = -1;
 
-    // Connect to shared memory
-    int shmid = shmget(UNIQUE_NUMBER, MAX_SOCKET_COUNT*sizeof(shmktp), 0777);
-    int semid = semget(SEM_UNIQUE_KEY, MAX_SOCKET_COUNT*2, 0777);
-    shmktp * addr = (shmktp *) shmat(shmid, NULL, 0);
+    // Connect to shared memory and semaphores
+    int shm_id = shmget(SHM_SOCKET_KEY, MAX_SOCKET_COUNT * sizeof(ktp_socket_t), 0777);
+    int sem_id = semget(SEM_KEY, MAX_SOCKET_COUNT * 2, 0777);
+    ktp_socket_t *sockets = (ktp_socket_t *)shmat(shm_id, NULL, 0);
 
-    // Initialize the shared memory
-    for (int i=0; i<MAX_SOCKET_COUNT; i++) {
-        semlock(semid, i);
-        if (addr[i].isfree == 1) {
-            sockid = i;
+    // Find a free socket slot
+    for (int i = 0; i < MAX_SOCKET_COUNT; i++) {
+        // Lock the socket entry
+        P(sem_id, i);
+        if (sockets[i].is_available == 1) {
+            socket_id = i;
             break;
         } else {
-            semunlock(semid, i);
+            // Release the socket if it's not free
+            V(sem_id, i);
         }
     }
 
-    // Initialize socket details
-    if (sockid > -1) {
+    // Initialize socket details if a free socket was found
+    if (socket_id > -1) {
         printf("Initialization successful\n");
-        addr[sockid].isfree = 0;
-        addr[sockid].proc_id = getpid();
-        bzero(&addr[sockid].destination, sizeof(struct sockaddr));
+        sockets[socket_id].is_available = 0;
+        sockets[socket_id].process_id = getpid();
+        bzero(&sockets[socket_id].remote_address, sizeof(struct sockaddr));
         
-        addr[sockid].swnd.window_size = 10;
-        addr[sockid].swnd.receive_size = 10;
-        addr[sockid].swnd.sb_start = 9;
-        addr[sockid].swnd.sb_end = 9;
-        addr[sockid].swnd.seq = 1;
+        // Initialize send window
+        sockets[socket_id].send_window.available_slots = 10;
+        sockets[socket_id].send_window.receiver_buffer_size = 10;
+        sockets[socket_id].send_window.buffer_start = 9;
+        sockets[socket_id].send_window.buffer_end = 9;
+        sockets[socket_id].send_window.sequence_number = 1;
 
-        addr[sockid].rwnd.last_message = 0;
-        addr[sockid].rwnd.rb_start = 9;
-        addr[sockid].rwnd.rb_end = 9;
-        addr[sockid].rwnd.window_size = 10;
+        // Initialize receive window
+        sockets[socket_id].receive_window.last_received_sequence = 0;
+        sockets[socket_id].receive_window.buffer_start = 9;
+        sockets[socket_id].receive_window.buffer_end = 9;
+        sockets[socket_id].receive_window.available_slots = 10;
 
-        for(int i=0; i<10; i++) {
-            addr[sockid].rwnd.expmsg[i] = 1;
-            addr[sockid].swnd.unack[i] = 0;
-            bzero(&addr[sockid].send_buffer[i], sizeof(addr[sockid].send_buffer[i]));
-            bzero(&addr[sockid].receive_buffer[i], sizeof(addr[sockid].receive_buffer[i]));
+        // Initialize buffers and arrays
+        for(int i = 0; i < 10; i++) {
+            sockets[socket_id].receive_window.sequence_map[i] = 0;
+            sockets[socket_id].send_window.unacknowledged[i] = 0;
+            bzero(&sockets[socket_id].send_buffer[i], sizeof(sockets[socket_id].send_buffer[i]));
+            bzero(&sockets[socket_id].receive_buffer[i], sizeof(sockets[socket_id].receive_buffer[i]));
         }
 
-        gettimeofday(&addr[sockid].last_send, NULL);
-        semunlock(semid, sockid);
+        // Record current time
+        gettimeofday(&sockets[socket_id].last_send_time, NULL);
+        
+        // Release the socket lock
+        V(sem_id, socket_id);
     }
 
-    shmdt(addr);
+    // Detach from shared memory
+    shmdt(sockets);
 
-    return sockid;
+    return socket_id;
 }
 
-int k_bind(int sockid, struct sockaddr_in * source, struct sockaddr_in * destination) {
-    int shmid = shmget(UNIQUE_NUMBER, MAX_SOCKET_COUNT*sizeof(shmktp), 0777);
-    int bind_shmid = shmget(BIND_SHARE_NUMBER, MAX_SOCKET_COUNT*sizeof(int), 0777);
-    int semid = semget(SEM_UNIQUE_KEY, MAX_SOCKET_COUNT*2, 0777);
+/**
+ * Binds a KTP socket to source and destination addresses
+ * 
+ * @param socket_id    Socket ID returned by k_socket
+ * @param source       Source address to bind to
+ * @param destination  Destination address to communicate with
+ * @return             0 on success, error code on failure
+ */
+int k_bind(int socket_id, struct sockaddr_in *source, struct sockaddr_in *destination) {
+    // Get shared memory and semaphores
+    int shm_id = shmget(SHM_SOCKET_KEY, MAX_SOCKET_COUNT * sizeof(ktp_socket_t), 0777);
+    int bind_shm_id = shmget(SHM_BIND_KEY, MAX_SOCKET_COUNT * sizeof(int), 0777);
+    int sem_id = semget(SEM_KEY, MAX_SOCKET_COUNT * 2, 0777);
     
-    shmktp * addr = (shmktp *) shmat(shmid, NULL, 0);
-    int * bind_addr = (int *) shmat(bind_shmid, NULL, 0);
+    ktp_socket_t *sockets = (ktp_socket_t *)shmat(shm_id, NULL, 0);
+    int *bind_status = (int *)shmat(bind_shm_id, NULL, 0);
     
-    semlock(semid, sockid);
-    semlock(semid, sockid+MAX_SOCKET_COUNT);
+    // Lock the socket and bind status
+    P(sem_id, socket_id);
+    P(sem_id, socket_id + MAX_SOCKET_COUNT);
 
-    addr[sockid].source = *source;
-    addr[sockid].destination = *destination;
-    bind_addr[sockid] = getpid();
+    // Set up addresses and request binding
+    sockets[socket_id].local_address = *source;
+    sockets[socket_id].remote_address = *destination;
+    bind_status[socket_id] = getpid();
     
-    semunlock(semid, sockid+MAX_SOCKET_COUNT);
-    semunlock(semid, sockid);
+    // Release locks
+    V(sem_id, socket_id + MAX_SOCKET_COUNT);
+    V(sem_id, socket_id);
 
-    while(bind_addr[sockid] == getpid()) usleep(20000);
-    int status = bind_addr[sockid];
+    // Wait for binding to complete (done by Bind_thread)
+    while(bind_status[socket_id] == getpid()) usleep(20000);
+    int status = bind_status[socket_id];
 
-    shmdt(bind_addr);
-    shmdt(addr);
+    // Detach from shared memory
+    shmdt(bind_status);
+    shmdt(sockets);
     return status;
 }
 
-int k_sendto(int sockid, struct sockaddr_in * destination, char message[]) {
-    int shmid = shmget(UNIQUE_NUMBER, MAX_SOCKET_COUNT*sizeof(shmktp), 0777);
-    int semid = semget(SEM_UNIQUE_KEY, MAX_SOCKET_COUNT*2, 0777);
-    shmktp * addr = (shmktp *) shmat(shmid, NULL, 0);
+/**
+ * Sends a message via a KTP socket
+ * 
+ * @param socket_id    Socket ID returned by k_socket
+ * @param destination  Destination address (must match what was provided to k_bind)
+ * @param message      Message to send (max 512 bytes)
+ * @return             0 on success, -1 on failure
+ */
+int k_sendto(int socket_id, struct sockaddr_in *destination, char message[]) {
+    // Get shared memory and semaphores
+    int shm_id = shmget(SHM_SOCKET_KEY, MAX_SOCKET_COUNT * sizeof(ktp_socket_t), 0777);
+    int sem_id = semget(SEM_KEY, MAX_SOCKET_COUNT * 2, 0777);
+    ktp_socket_t *sockets = (ktp_socket_t *)shmat(shm_id, NULL, 0);
     
-    semlock(semid, sockid);
-    if (addr[sockid].destination.sin_addr.s_addr != destination->sin_addr.s_addr || addr[sockid].destination.sin_port != destination->sin_port) {
-        shmdt(addr);
-        semunlock(semid, sockid);
+    // Lock the socket
+    P(sem_id, socket_id);
+    
+    // Check if destination matches
+    if (sockets[socket_id].remote_address.sin_addr.s_addr != destination->sin_addr.s_addr || 
+        sockets[socket_id].remote_address.sin_port != destination->sin_port) {
+        shmdt(sockets);
+        V(sem_id, socket_id);
         return -1;
     }
 
-    if (addr[sockid].swnd.window_size == 0) {
-        // printf("Oops - %d %d\n", addr[sockid].swnd.window_size);
-        shmdt(addr);
-        semunlock(semid, sockid);
+    // Check if send window has space
+    if (sockets[socket_id].send_window.available_slots == 0) {
+        // printf("Oops - %d %d\n", sockets[socket_id].send_window.available_slots);
+        shmdt(sockets);
+        V(sem_id, socket_id);
         return -1;
     }
 
+    // Check message size
     if (strlen(message) > 512) {
-        shmdt(addr);
-        semunlock(semid, sockid);
+        shmdt(sockets);
+        V(sem_id, socket_id);
         return -1;
     }
 
-    int index = (addr[sockid].swnd.sb_end + 1)%10;
-    addr[sockid].swnd.sb_end = index;
-    bzero(&addr[sockid].send_buffer[index], MESSAGE_SIZE);
-    strcpy(addr[sockid].send_buffer[index], message);
-    addr[sockid].swnd.window_size--;
-    addr[sockid].swnd.unack[index] = 1;
-    printf("Message written - %d - \"%s\"\n", addr[sockid].swnd.window_size, message);
+    // Add message to send buffer
+    int next_index = (sockets[socket_id].send_window.buffer_end + 1) % 10;
+    sockets[socket_id].send_window.buffer_end = next_index;
+    bzero(&sockets[socket_id].send_buffer[next_index], MESSAGE_SIZE);
+    strcpy(sockets[socket_id].send_buffer[next_index], message);
+    sockets[socket_id].send_window.available_slots--;
+    sockets[socket_id].send_window.unacknowledged[next_index] = 1;
+    printf("Message written - %d - \"%s\"\n", sockets[socket_id].send_window.available_slots, message);
 
-    shmdt(addr);
-    semunlock(semid, sockid);
+    // Detach and unlock
+    shmdt(sockets);
+    V(sem_id, socket_id);
     return 0;
 }
 
-int k_recvfrom(int sockid, struct sockaddr_in * destination, char * buff) {
-    int shmid = shmget(UNIQUE_NUMBER, MAX_SOCKET_COUNT*sizeof(shmktp), 0777);
-    int semid = semget(SEM_UNIQUE_KEY, MAX_SOCKET_COUNT*2, 0777);
-    shmktp * addr = (shmktp *) shmat(shmid, NULL, 0);
+/**
+ * Receives a message from a KTP socket
+ * 
+ * @param socket_id    Socket ID returned by k_socket
+ * @param destination  Destination address (ignored, used for API compatibility)
+ * @param buff         Buffer to store received message
+ * @return             0 on success, -1 if no messages are available
+ */
+int k_recvfrom(int socket_id, struct sockaddr_in *destination, char *buff) {
+    // Get shared memory and semaphores
+    int shm_id = shmget(SHM_SOCKET_KEY, MAX_SOCKET_COUNT * sizeof(ktp_socket_t), 0777);
+    int sem_id = semget(SEM_KEY, MAX_SOCKET_COUNT * 2, 0777);
+    ktp_socket_t *sockets = (ktp_socket_t *)shmat(shm_id, NULL, 0);
 
-    semlock(semid, sockid);
+    // Lock the socket
+    P(sem_id, socket_id);
     
-    if (addr[sockid].rwnd.window_size == 10) {
-        shmdt(addr);
-        semunlock(semid, sockid);
+    // Check if receive buffer is empty
+    if (sockets[socket_id].receive_window.available_slots == 10) {
+        shmdt(sockets);
+        V(sem_id, socket_id);
         return -1;
     }
     
-    int index = (addr[sockid].rwnd.rb_start + 1)%10;
-    addr[sockid].rwnd.rb_start = index;
-    addr[sockid].rwnd.window_size++;
-    addr[sockid].rwnd.expmsg[index] = 1;
+    // Get next message from receive buffer
+    int next_index = (sockets[socket_id].receive_window.buffer_start + 1) % 10;
+    sockets[socket_id].receive_window.buffer_start = next_index;
+    sockets[socket_id].receive_window.available_slots++;
+    sockets[socket_id].receive_window.sequence_map[next_index] = 1;
 
-    strcpy(buff, addr[sockid].receive_buffer[index]);
-    bzero(addr[sockid].receive_buffer[index], MESSAGE_SIZE);
+    // Copy message to user buffer
+    strcpy(buff, sockets[socket_id].receive_buffer[next_index]);
+    bzero(sockets[socket_id].receive_buffer[next_index], MESSAGE_SIZE);
 
-    printf("Read - %s - %d\n", buff, addr[sockid].rwnd.window_size);
+    printf("Read - %s - %d\n", buff, sockets[socket_id].receive_window.available_slots);
 
-    shmdt(addr);
-    semunlock(semid, sockid);
+    // Detach and unlock
+    shmdt(sockets);
+    V(sem_id, socket_id);
     return 0;
 }
 
-void k_close(int sockid) {
-    int shmid = shmget(UNIQUE_NUMBER, MAX_SOCKET_COUNT*sizeof(shmktp), 0777);
-    int bind_shmid = shmget(BIND_SHARE_NUMBER, MAX_SOCKET_COUNT*sizeof(int), 0777);
-    int semid = semget(SEM_UNIQUE_KEY, MAX_SOCKET_COUNT*2, 0777);
+/**
+ * Closes a KTP socket
+ * 
+ * @param socket_id    Socket ID returned by k_socket
+ */
+void k_close(int socket_id) {
+    // Get shared memory and semaphores
+    int shm_id = shmget(SHM_SOCKET_KEY, MAX_SOCKET_COUNT * sizeof(ktp_socket_t), 0777);
+    int bind_shm_id = shmget(SHM_BIND_KEY, MAX_SOCKET_COUNT * sizeof(int), 0777);
+    int sem_id = semget(SEM_KEY, MAX_SOCKET_COUNT * 2, 0777);
 
-    int * bind_addr = (int *) shmat(bind_shmid, NULL, 0);
-    shmktp * addr = shmat(shmid, NULL, 0);
+    int *bind_status = (int *)shmat(bind_shm_id, NULL, 0);
+    ktp_socket_t *sockets = shmat(shm_id, NULL, 0);
 
-    semlock(semid, sockid);
-    semlock(semid, sockid+MAX_SOCKET_COUNT);
+    // Lock the socket and bind status
+    P(sem_id, socket_id);
+    P(sem_id, socket_id + MAX_SOCKET_COUNT);
 
-    bind_addr[sockid] = -10;
-    bzero(&addr[sockid].destination, sizeof(addr[sockid].destination));
-    addr[sockid].isfree = 1;
-    addr[sockid].proc_id = 0;
+    // Mark socket for closure and reset
+    bind_status[socket_id] = -10;
+    bzero(&sockets[socket_id].remote_address, sizeof(sockets[socket_id].remote_address));
+    sockets[socket_id].is_available = 1;
+    sockets[socket_id].process_id = 0;
 
-    semunlock(semid, sockid+MAX_SOCKET_COUNT);
-    semunlock(semid, sockid);
+    // Release locks
+    V(sem_id, socket_id + MAX_SOCKET_COUNT);
+    V(sem_id, socket_id);
 
-    shmdt(addr);
-    shmdt(bind_addr);
+    // Detach from shared memory
+    shmdt(sockets);
+    shmdt(bind_status);
 }
 
-// int main(int argc, char * argv[]) {
-//     // Socket creation and close
-//     int sock = k_socket(AF_INET, SOCK_KTP, 0);
-//     printf("%d\n", sock);
+/* Uncomment and modify for application testing
+int main(int argc, char *argv[]) {
+    // Socket creation and close
+    int sock = k_socket(AF_INET, SOCK_KTP, 0);
+    printf("%d\n", sock);
 
-//     struct sockaddr_in server, client;
+    struct sockaddr_in server, client;
 
-//     server.sin_family = AF_INET;
-//     server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY;
     
-//     client.sin_family = AF_INET;
-//     client.sin_addr.s_addr = inet_addr("127.0.0.1");
+    client.sin_family = AF_INET;
+    client.sin_addr.s_addr = inet_addr("127.0.0.1");
     
-//     if (argc > 1) {
-//         server.sin_port = htons(10000);
-//         client.sin_port = htons(5000);
-//     } else {
-//         server.sin_port = htons(5000);
-//         client.sin_port = htons(10000);
-//     }
+    if (argc > 1) {
+        server.sin_port = htons(10000);
+        client.sin_port = htons(5000);
+    } else {
+        server.sin_port = htons(5000);
+        client.sin_port = htons(10000);
+    }
 
-//     int bind_status = k_bind(sock, &server, &client);
-//     printf("Bind Error - %d\n", bind_status);
+    int bind_status = k_bind(sock, &server, &client);
+    printf("Bind Error - %d\n", bind_status);
 
-//     if (argc == 1) { 
-//         for (int i=1; i<=20; i++) {
-//             char mess[512];
-//             bzero(mess, sizeof(mess));
-//             sprintf(mess, "Hello World %d", i);
-//             printf("%d\n", k_sendto(sock, &client, mess));
-//             if (i == 10) sleep(2);
-//         }
-//         sleep(10);
-//     } else {
-//         char buff[MESSAGE_SIZE];
-//         sleep(5);
-//         for(int i=0; i<20; i++) while(k_recvfrom(sock, &client, buff)<0);
-//         sleep(5);
-//     }
+    if (argc == 1) { 
+        for (int i=1; i<=20; i++) {
+            char mess[512];
+            bzero(mess, sizeof(mess));
+            sprintf(mess, "Hello World %d", i);
+            printf("%d\n", k_sendto(sock, &client, mess));
+            if (i == 10) sleep(2);
+        }
+        sleep(10);
+    } else {
+        char buff[MESSAGE_SIZE];
+        sleep(5);
+        for(int i=0; i<20; i++) while(k_recvfrom(sock, &client, buff)<0);
+        sleep(5);
+    }
 
-//     k_close(sock);
-// }
+    k_close(sock);
+}
+*/

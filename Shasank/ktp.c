@@ -1,7 +1,6 @@
 #include "ktp.h"
 
-#define P(s) semop(s, &pop, 1)  /* pop is the structure we pass for doing the P(s) operation */
-#define V(s) semop(s, &vop, 1)  /* vop is the structure we pass for doing the V(s) operation */
+
 
 int k_socket(int __domain, int __type, int __protocol) {
 
