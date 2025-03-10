@@ -41,7 +41,7 @@ void V(int semid, int semnum) {
 }
 // Send window structure
 struct swnd {
-    int unacknowledged[10];    // Tracks whether each buffer slot is unacknowledged
+    int unacknowledged[10];    // Tracks whether each buffer slot is unacknowledged (1) or not (0)
     int receiver_buffer_size;  // Available space in receiver's buffer
     int available_slots;       // Available slots in the send buffer
     int sequence_number;       // Current sequence number
@@ -64,11 +64,11 @@ typedef struct rwnd receive_window_t;
 
 // Shared memory data structure for KTP socket
 struct ktp_socket {
+    struct sockaddr_in local_address;        // Source address
+    struct sockaddr_in remote_address;       // Destination address
     int is_available;                        // Whether socket is free (1) or in use (0)
     int process_id;                          // Process ID using this socket
     int socket_fd;                           // Underlying UDP socket file descriptor
-    struct sockaddr_in local_address;        // Source address
-    struct sockaddr_in remote_address;       // Destination address
     char send_buffer[10][MESSAGE_SIZE];      // Circular buffer for outgoing messages
     char receive_buffer[10][MESSAGE_SIZE];   // Circular buffer for incoming messages
     send_window_t send_window;               // Send window control structure
