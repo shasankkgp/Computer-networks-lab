@@ -103,6 +103,7 @@ void handle_client(Task *task) {
     ClientState state = {-1, 0, 0, time(NULL), 0, 0};  // Track client's state and activity
     int wait_message_time = -1; // Track last time we printed a waiting message
     int idle_warning_sent = 0;
+    int task_request_count = 0;  // Counter for GET_TASK requests without completing tasks
 
     // Detect connection that's established but no commands received
     time_t conn_established_time = time(NULL);
@@ -124,16 +125,30 @@ void handle_client(Task *task) {
             if(strncmp(buffer, "GET_TASK", 8) == 0) {
                 // Check if client already has a task assigned
                 if(state.is_assigned) {
-                    // Client requests a new task while having one pending - TERMINATE THIS CLIENT
-                    printf("Client requested new task while having one pending - terminating client\n");
-                    write(clientfd, "ERROR: Requested new task before completing current task. Connection terminated.", 79);
+                    // Client requests a new task while having one pending
+                    // Check how many times this has happened
+                    task_request_count++;
+                    printf("Client requested new task while having one pending - request count: %d\n", 
+                          task_request_count);
                     
-                    // Mark the task as unassigned so other clients can pick it up
-                    task_states[state.task_idx] = TASK_UNASSIGNED;
-                    
-                    // Exit with special status to indicate misbehavior
-                    exit(10);
+                    if(task_request_count >= 3) {
+                        // After 3 attempts, terminate this client
+                        printf("Client requested new task while having one pending 3 times - terminating client\n");
+                        write(clientfd, "ERROR: Requested new task before completing current task multiple times. Connection terminated.", 93);
+                        
+                        // Mark the task as unassigned so other clients can pick it up
+                        task_states[state.task_idx] = TASK_UNASSIGNED;
+                        
+                        // Exit with special status to indicate misbehavior
+                        exit(10);
+                    } else {
+                        // Give a warning but allow it for the first 2 attempts
+                        write(clientfd, "WARNING: You already have a pending task. Complete it before requesting another.", 78);
+                    }
                 } else {
+                    // Reset the counter if the client is properly requesting a new task without a pending one
+                    task_request_count = 0;
+                    
                     // Find an available task
                     int found_task = 0;
                     for(int i = 0; i < total_tasks; i++) {
@@ -184,6 +199,7 @@ void handle_client(Task *task) {
                     state.is_assigned = 0;
                     state.task_idx = -1;
                     wait_message_time = -1;
+                    task_request_count = 0;  // Reset task request counter on successful completion
                     
                     // Count completed tasks
                     int completed = 0;
@@ -217,11 +233,11 @@ void handle_client(Task *task) {
             }
         } else if(ans == 0) {
             // Client closed connection without proper exit
-            printf("Client closed connection without proper exit\n");
+            printf("Client closed connection abruptly without proper exit\n");
             
             // If client had a task, mark it as unassigned
             if(state.is_assigned) {
-                printf("Task %d marked as unassigned due to client disconnection\n", state.task_idx);
+                printf("Task %d marked as unassigned due to abrupt client disconnection\n", state.task_idx);
                 task_states[state.task_idx] = TASK_UNASSIGNED;
             }
             
@@ -285,14 +301,15 @@ void handle_client(Task *task) {
         // Check for initial connection with no commands
         if(!initial_command_received && current_time - conn_established_time > 5 && !state.initial_warning_sent) {
             printf("Client connected but hasn't sent any commands for 5 seconds\n");
-            write(clientfd, "ERROR: No commands received. Please request a task or exit.\n", 59);
+            write(clientfd, "WARNING: No commands received. Please request a task or exit.\n", 59);
             state.initial_warning_sent = 1;  // Set flag to prevent repeated warnings
-            
-            // The disconnect check can stay as it is
-            if(current_time - conn_established_time > 10) {
-                printf("Disconnecting idle client that hasn't sent any commands\n");
-                exit(10);
-            }
+        }
+        
+        // Disconnect after 10 seconds if no initial commands received
+        if(!initial_command_received && current_time - conn_established_time > 10) {
+            printf("Disconnecting idle client that hasn't sent any commands for 10 seconds\n");
+            write(clientfd, "ERROR: No commands received for 10 seconds. Disconnecting.\n", 59);
+            exit(10);
         }
         
         // Check for idle connection after initial activity
@@ -303,7 +320,7 @@ void handle_client(Task *task) {
             state.connection_warnings++;
         }
         
-        // Disconnect after inactivity timeout
+        // Disconnect after inactivity timeout (30 seconds)
         if(initial_command_received && current_time - state.last_activity > CONNECTION_TIMEOUT) {
             printf("Client inactive for %d seconds. Terminating connection.\n", CONNECTION_TIMEOUT);
             write(clientfd, "ERROR: Connection inactive for too long. Disconnecting.\n", 57);

@@ -5,71 +5,53 @@
 #include <arpa/inet.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
+#include <time.h>
 
-#define PORT 5500
+#define PORT 5500 
 
-int main() {
-    int sockfd;
+int main(int argc, char *argv[]) {
+    int sockfd; 
     struct sockaddr_in address;
-    
-    // Create socket
+
+    // Create socket 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if(sockfd < 0) {
         perror("socket failed");
         exit(EXIT_FAILURE);
     }
-    
-    // Configure server address
+
+    // Configure server address 
     address.sin_addr.s_addr = inet_addr("127.0.0.1");
     address.sin_port = htons(PORT);
     address.sin_family = AF_INET;
-    
+
     if(connect(sockfd, (struct sockaddr *)&address, sizeof(address)) < 0) {
         perror("Connection failed");
         exit(EXIT_FAILURE);
     }
-    
-    printf("Connected to server\n");
-    
-    // Make socket non-blocking
-    int flags = fcntl(sockfd, F_GETFL, 0);
-    fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+
+    printf("Connected to server - Simulating bad client that abruptly closes connection\n");
     
     // Request a task
     printf("Requesting task...\n");
     write(sockfd, "GET_TASK", 8);
     
+    // Read the task assignment
     char buffer[1024];
-    int task_received = 0;
-    
-    while(!task_received) {
-        int ans = read(sockfd, buffer, sizeof(buffer)-1);
-        if(ans > 0) {
-            buffer[ans] = '\0';
-            printf("Received from server: %s\n", buffer);
-            
-            if(strncmp(buffer, "TASK", 4) == 0) {
-                task_received = 1;
-                printf("Task received, now disconnecting abruptly without proper exit\n");
-                // Disconnect abruptly without sending exit message
-                break;
-            }
-        } else if(ans == 0) {
-            printf("Server closed connection\n");
-            break;
-        } else if(errno != EAGAIN && errno != EWOULDBLOCK) {
-            perror("read failed");
-            break;
-        }
+    int ans = read(sockfd, buffer, sizeof(buffer)-1);
+    if(ans > 0) {
+        buffer[ans] = '\0';
+        printf("Received from server: %s\n", buffer);
         
-        // Sleep to avoid busy waiting
-        usleep(100000);  // 100ms
+        // Wait a moment to ensure server registered the task assignment
+        printf("Waiting 2 seconds, then will abruptly close connection...\n");
+        sleep(2);
+        
+        printf("Abruptly closing connection without completing task or proper exit\n");
+        // Close socket without sending proper exit message
+        // This should trigger the server to detect connection closed abruptly
     }
     
-    // Close the socket without sending an exit message
     close(sockfd);
-    printf("Connection closed abruptly\n");
     return 0;
 }

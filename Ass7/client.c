@@ -158,7 +158,7 @@ int main(int argc, char *argv[]) {
         }
 
         // Add a small delay to avoid busy waiting
-        usleep(100000);  // 100ms delay
+        sleep(1);  // 100ms delay
     }
     
     // Send exit message
