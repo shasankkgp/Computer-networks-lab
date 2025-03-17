@@ -8,7 +8,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include <errno.h>
-#include <fcntl.h>  // Added for fcntl() function and flags
+#include <fcntl.h>  // For fcntl() function and flags
 
 #define PORT 5500 
 
@@ -53,6 +53,7 @@ int main(int argc, char *argv[]) {
     
     int tasks_completed = 0;
     int task_pending = 0;
+    time_t last_ping_time = time(NULL);
     
     while(tasks_completed < total_tasks) {
         // If no task is pending, request a new one
@@ -86,6 +87,19 @@ int main(int argc, char *argv[]) {
                 } else {
                     printf("Error from server: %s\n", buffer);
                 }
+                continue;
+            }
+            
+            if(strncmp(buffer, "WARNING", 7) == 0) {
+                printf("Received warning: %s\n", buffer);
+                // Send a ping to keep connection alive
+                printf("Sending PING to keep connection alive\n");
+                write(sockfd, "PING", 4);
+                continue;
+            }
+            
+            if(strncmp(buffer, "PONG", 4) == 0) {
+                printf("Received PONG response\n");
                 continue;
             }
 
@@ -135,11 +149,20 @@ int main(int argc, char *argv[]) {
             break;
         }
 
+        // Send periodic pings to keep connection alive (if idle for too long)
+        time_t current_time = time(NULL);
+        if(current_time - last_ping_time > 15) {  // Send ping every 15 seconds of inactivity
+            printf("Sending keep-alive PING\n");
+            write(sockfd, "PING", 4);
+            last_ping_time = current_time;
+        }
+
         // Add a small delay to avoid busy waiting
         usleep(100000);  // 100ms delay
     }
     
     // Send exit message
+    printf("Sending proper exit message\n");
     write(sockfd, "exit", 4);
     
     close(sockfd);

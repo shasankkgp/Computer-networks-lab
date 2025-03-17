@@ -22,11 +22,14 @@
 #define TASK_UNASSIGNED 0
 #define TASK_IN_PROCESS 1
 #define TASK_COMPLETED 2
+#define TASK_TIMEOUT 3
+#define CONNECTION_TIMEOUT 30  // Seconds before considering a connection dead
 
 int *clients;  // pids of child processes
 int clientfd;
 int num_clients = 0;
 int total_tasks;
+int server_running = 1;
 
 typedef struct {
     char lines[100][100];
@@ -43,19 +46,34 @@ void child_handler(int sig) {
     
     // Non-blocking wait for any child process
     while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-        int index;
-        for( int i=0 ; i<num_clients ; i++ ){
+        int index = -1;
+        for(int i = 0; i < num_clients; i++) {
             if(clients[i] == pid) {
                 clients[i] = 0;
                 index = i+1;
                 break;
             }
         }
-        printf("Child process %d terminated\n", index);
+        
+        if(index != -1) {
+            printf("Child process %d terminated with status %d\n", index, WEXITSTATUS(status));
+            
+            // If child exited with status 10, it detected a misbehaving client
+            if(WIFEXITED(status) && WEXITSTATUS(status) == 10) {
+                printf("Child %d detected misbehaving client\n", index);
+            }
+        }
     }
 }
 
-void handler(int sig) {
+void termination_handler(int sig) {
+    if(sig == SIGINT || sig == SIGTERM) {
+        printf("\nServer shutting down...\n");
+        server_running = 0;
+    }
+}
+
+void client_handler(int sig) {
     if(sig == SIGUSR1) {
         // Send termination message to client
         write(clientfd, "TERMINATE", 9);
@@ -69,16 +87,26 @@ typedef struct {
     int task_idx;
     time_t assignment_time;
     int is_assigned;
+    time_t last_activity;
+    int connection_warnings;
+    int initial_warning_sent;
 } ClientState;
 
 void handle_client(Task *task) {
+    signal(SIGUSR1, client_handler);
+
     // Make it non-blocking
     int flags = fcntl(clientfd, F_GETFL, 0);
     fcntl(clientfd, F_SETFL, flags | O_NONBLOCK);
 
     char buffer[1024];
-    ClientState state = {-1, 0, 0};  // Track client's assigned task
+    ClientState state = {-1, 0, 0, time(NULL), 0, 0};  // Track client's state and activity
     int wait_message_time = -1; // Track last time we printed a waiting message
+    int idle_warning_sent = 0;
+
+    // Detect connection that's established but no commands received
+    time_t conn_established_time = time(NULL);
+    int initial_command_received = 0;
 
     while(1) {
         // Try to read from client 
@@ -86,6 +114,12 @@ void handle_client(Task *task) {
         if(ans > 0) {
             buffer[ans] = '\0';
             printf("Received from client: %s\n", buffer);
+            
+            // Update last activity time whenever we receive data
+            state.last_activity = time(NULL);
+            initial_command_received = 1;
+            idle_warning_sent = 0;
+            state.connection_warnings = 0;
 
             if(strncmp(buffer, "GET_TASK", 8) == 0) {
                 // Check if client already has a task assigned
@@ -93,15 +127,17 @@ void handle_client(Task *task) {
                     // Client requests a new task while having one pending - TERMINATE THIS CLIENT
                     printf("Client requested new task while having one pending - terminating client\n");
                     write(clientfd, "ERROR: Requested new task before completing current task. Connection terminated.", 79);
-
+                    
                     // Mark the task as unassigned so other clients can pick it up
                     task_states[state.task_idx] = TASK_UNASSIGNED;
-                    break;
+                    
+                    // Exit with special status to indicate misbehavior
+                    exit(10);
                 } else {
                     // Find an available task
                     int found_task = 0;
                     for(int i = 0; i < total_tasks; i++) {
-                        if(task_states[i] == TASK_UNASSIGNED) {
+                        if(task_states[i] == TASK_UNASSIGNED || task_states[i] == TASK_TIMEOUT) {
                             // Assign this task to the client
                             task_states[i] = TASK_IN_PROCESS;
                             state.task_idx = i;
@@ -163,8 +199,11 @@ void handle_client(Task *task) {
                 } else {
                     write(clientfd, "ERROR: No task assigned\n", 24);
                 }
+            } else if(strncmp(buffer, "PING", 4) == 0) {
+                // Respond to ping with PONG to keep connection alive
+                write(clientfd, "PONG", 4);
             } else if(strncmp(buffer, "exit", 4) == 0) {
-                printf("Client disconnecting\n");
+                printf("Client disconnecting properly\n");
                 
                 // If client had a task, mark it as unassigned
                 if(state.is_assigned) {
@@ -172,17 +211,22 @@ void handle_client(Task *task) {
                 }
                 
                 break;
+            } else {
+                // Unknown command
+                write(clientfd, "ERROR: Unknown command\n", 23);
             }
         } else if(ans == 0) {
-            // Client closed connection
-            printf("Client closed connection\n");
+            // Client closed connection without proper exit
+            printf("Client closed connection without proper exit\n");
             
             // If client had a task, mark it as unassigned
             if(state.is_assigned) {
+                printf("Task %d marked as unassigned due to client disconnection\n", state.task_idx);
                 task_states[state.task_idx] = TASK_UNASSIGNED;
             }
             
-            break;
+            // Exit with special status to indicate client disconnection
+            exit(10);
         } else if(errno != EAGAIN && errno != EWOULDBLOCK) {
             perror("read failed");
             
@@ -194,7 +238,7 @@ void handle_client(Task *task) {
             break;
         }
         
-        // Check for timeout on assigned task and display waiting messages
+        // Check for timeout on assigned task
         if(state.is_assigned) {
             time_t now = time(NULL);
             int elapsed_time = (int)(now - state.assignment_time);
@@ -210,11 +254,24 @@ void handle_client(Task *task) {
                 
                 // Check for timeout after 10 seconds
                 if(elapsed_time >= 10) {  // 10 second timeout
-                    printf("Task %d timed out, marking as unassigned\n", state.task_idx);
-                    task_states[state.task_idx] = TASK_UNASSIGNED;
+                    printf("Task %d timed out, marking as TASK_TIMEOUT\n", state.task_idx);
+                    task_states[state.task_idx] = TASK_TIMEOUT;
                     state.is_assigned = 0;
                     state.task_idx = -1;
                     wait_message_time = -1;
+                    
+                    // Update task file to show timeout
+                    FILE *file = fopen("tasks.txt", "w");
+                    for(int i = 0; i < total_tasks; i++) {
+                        if(task_states[i] == TASK_COMPLETED) {
+                            fprintf(file, "%s = %s\n", task->lines[i], results[i]);
+                        } else if(task_states[i] == TASK_TIMEOUT) {
+                            fprintf(file, "%s (TIMED OUT)\n", task->lines[i]);
+                        } else {
+                            fprintf(file, "%s\n", task->lines[i]);
+                        }
+                    }
+                    fclose(file);
                     
                     // Notify client
                     write(clientfd, "ERROR: Task timed out\n", 22);
@@ -222,10 +279,49 @@ void handle_client(Task *task) {
             }
         }
         
+        // Check for idle connection (Case 3: Connect to server and not respond further)
+        time_t current_time = time(NULL);
+        
+        // Check for initial connection with no commands
+        if(!initial_command_received && current_time - conn_established_time > 5 && !state.initial_warning_sent) {
+            printf("Client connected but hasn't sent any commands for 5 seconds\n");
+            write(clientfd, "ERROR: No commands received. Please request a task or exit.\n", 59);
+            state.initial_warning_sent = 1;  // Set flag to prevent repeated warnings
+            
+            // The disconnect check can stay as it is
+            if(current_time - conn_established_time > 10) {
+                printf("Disconnecting idle client that hasn't sent any commands\n");
+                exit(10);
+            }
+        }
+        
+        // Check for idle connection after initial activity
+        if(initial_command_received && current_time - state.last_activity > CONNECTION_TIMEOUT/2 && !idle_warning_sent) {
+            printf("Client inactive for %d seconds. Sending warning.\n", (int)(current_time - state.last_activity));
+            write(clientfd, "WARNING: Connection inactive. Send PING to keep alive.\n", 55);
+            idle_warning_sent = 1;
+            state.connection_warnings++;
+        }
+        
+        // Disconnect after inactivity timeout
+        if(initial_command_received && current_time - state.last_activity > CONNECTION_TIMEOUT) {
+            printf("Client inactive for %d seconds. Terminating connection.\n", CONNECTION_TIMEOUT);
+            write(clientfd, "ERROR: Connection inactive for too long. Disconnecting.\n", 57);
+            
+            // If client had a task, mark it as unassigned
+            if(state.is_assigned) {
+                task_states[state.task_idx] = TASK_UNASSIGNED;
+            }
+            
+            // Exit with special status
+            exit(10);
+        }
+        
         usleep(10000);  // 10ms gap to check for new data
     }
     
     close(clientfd);
+    exit(0);
 }
 
 int main(int argc, char *argv[]) {
@@ -233,13 +329,21 @@ int main(int argc, char *argv[]) {
     struct sockaddr_in address, client_addr;
     socklen_t addr_len = sizeof(client_addr);
     
-    // Set up signal handler for child processes
+    // Set up signal handlers
     signal(SIGCHLD, child_handler);
-    signal(SIGUSR1, handler);
+    signal(SIGINT, termination_handler);
+    signal(SIGTERM, termination_handler);
     
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if(sockfd < 0) {
         perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+    
+    // Set socket options to reuse address and port
+    int opt = 1;
+    if(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt failed");
         exit(EXIT_FAILURE);
     }
     
@@ -252,6 +356,7 @@ int main(int argc, char *argv[]) {
     address.sin_family = AF_INET;
 
     clients = (int *)malloc(MAX_CLIENTS * sizeof(int));
+    memset(clients, 0, MAX_CLIENTS * sizeof(int));
     
     if(bind(sockfd, (struct sockaddr *)&address, sizeof(address)) < 0) {
         perror("bind failed");
@@ -315,12 +420,22 @@ int main(int argc, char *argv[]) {
     }
     
     printf("Server started on port %d\n", PORT);
+    
+    // Initialize stats
+    int client_count = 0;
+    int misbehaving_clients = 0;
+    int tasks_completed = 0;
+    int tasks_timed_out = 0;
 
-    while(1) {
+    while(server_running) {
         // Accept new connection
         clientfd = accept(sockfd, (struct sockaddr *)&client_addr, &addr_len);
         if(clientfd >= 0) {
-            printf("New client connected\n");
+            client_count++;
+            char client_ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &(client_addr.sin_addr), client_ip, INET_ADDRSTRLEN);
+            printf("New client #%d connected from %s:%d\n", 
+                   client_count, client_ip, ntohs(client_addr.sin_port));
             
             // Fork a child process to handle this client 
             pid_t pid = fork();
@@ -347,12 +462,37 @@ int main(int argc, char *argv[]) {
             } else if(pid > 0) {
                 // Parent process
                 if(num_clients < MAX_CLIENTS) {
-                    clients[num_clients++] = pid;
+                    // Find an empty slot
+                    int i;
+                    for(i = 0; i < MAX_CLIENTS; i++) {
+                        if(clients[i] == 0) {
+                            clients[i] = pid;
+                            break;
+                        }
+                    }
+                    
+                    if(i == MAX_CLIENTS) {
+                        printf("Warning: Client array full, overwriting first slot\n");
+                        clients[0] = pid;
+                    }
+                    
+                    num_clients = (num_clients < MAX_CLIENTS) ? num_clients + 1 : MAX_CLIENTS;
                 }
                 close(clientfd);   // Parent doesn't need client socket
                 
+                // Count tasks completed and timed out
+                tasks_completed = 0;
+                tasks_timed_out = 0;
+                for(int i = 0; i < total_tasks; i++) {
+                    if(task_states[i] == TASK_COMPLETED) {
+                        tasks_completed++;
+                    } else if(task_states[i] == TASK_TIMEOUT) {
+                        tasks_timed_out++;
+                    }
+                }
+                
                 // Check if all tasks are completed
-                if(task->num_lines == 0) {
+                if(task->num_lines == 0 || tasks_completed == total_tasks) {
                     printf("All tasks completed\n");
                     break;
                 }
@@ -362,17 +502,48 @@ int main(int argc, char *argv[]) {
             }
         } else if(errno != EAGAIN && errno != EWOULDBLOCK) {
             perror("accept failed");
+            break;
         }
 
         // Short sleep to prevent CPU hogging
         usleep(10000);  // 10 ms gap to check for new connections
 
+        // Periodically print task statistics
+        static time_t last_stats_time = 0;
+        time_t current_time = time(NULL);
+        if(current_time - last_stats_time >= 5) {  // Every 5 seconds
+            tasks_completed = 0;
+            tasks_timed_out = 0;
+            int tasks_in_progress = 0;
+            
+            for(int i = 0; i < total_tasks; i++) {
+                if(task_states[i] == TASK_COMPLETED) {
+                    tasks_completed++;
+                } else if(task_states[i] == TASK_TIMEOUT) {
+                    tasks_timed_out++;
+                } else if(task_states[i] == TASK_IN_PROCESS) {
+                    tasks_in_progress++;
+                }
+            }
+            
+            printf("\n--- Task Statistics ---\n");
+            printf("Total tasks: %d\n", total_tasks);
+            printf("Completed: %d (%.1f%%)\n", tasks_completed, (float)tasks_completed/total_tasks*100);
+            printf("Timed out: %d\n", tasks_timed_out);
+            printf("In progress: %d\n", tasks_in_progress);
+            printf("Unassigned: %d\n", total_tasks - tasks_completed - tasks_timed_out - tasks_in_progress);
+            printf("Active clients: %d\n", num_clients);
+            printf("----------------------\n\n");
+            
+            last_stats_time = current_time;
+        }
+
         // Check if all tasks are completed
-        if(task->num_lines == 0) {
+        if(task->num_lines == 0 || tasks_completed == total_tasks) {
             printf("All tasks completed\n");
 
             // Give child processes time to send termination messages to clients
-            for(int i = 0; i < num_clients; i++) {
+            for(int i = 0; i < MAX_CLIENTS; i++) {
                 if(clients[i] > 0) {
                     kill(clients[i], SIGUSR1);
                 }
@@ -382,26 +553,44 @@ int main(int argc, char *argv[]) {
             sleep(1);
 
             // Kill all remaining child processes
-            for(int i = 0; i < num_clients; i++) {
+            for(int i = 0; i < MAX_CLIENTS; i++) {
                 if(clients[i] > 0) {
                     kill(clients[i], SIGKILL);
                 }
             }
             
-            // Clean up resources
-            close(sockfd);
-            shmdt(task);
-            shmdt(results);
-            shmdt(task_states);
-            shmctl(shmid, IPC_RMID, NULL);
-            shmctl(shmid_results, IPC_RMID, NULL);
-            shmctl(shmid_states, IPC_RMID, NULL);
-            free(clients);
-            
-            // Exit the server
-            exit(0);
+            break;
         }
     }
     
+    // Final statistics
+    printf("\n--- Final Task Statistics ---\n");
+    tasks_completed = 0;
+    tasks_timed_out = 0;
+    for(int i = 0; i < total_tasks; i++) {
+        if(task_states[i] == TASK_COMPLETED) {
+            tasks_completed++;
+        } else if(task_states[i] == TASK_TIMEOUT) {
+            tasks_timed_out++;
+        }
+    }
+    
+    printf("Total tasks: %d\n", total_tasks);
+    printf("Completed: %d (%.1f%%)\n", tasks_completed, (float)tasks_completed/total_tasks*100);
+    printf("Timed out: %d\n", tasks_timed_out);
+    printf("Total clients connected: %d\n", client_count);
+    
+    // Clean up resources
+    printf("Cleaning up resources...\n");
+    close(sockfd);
+    shmdt(task);
+    shmdt(results);
+    shmdt(task_states);
+    shmctl(shmid, IPC_RMID, NULL);
+    shmctl(shmid_results, IPC_RMID, NULL);
+    shmctl(shmid_states, IPC_RMID, NULL);
+    free(clients);
+    
+    printf("Server terminated successfully\n");
     return 0;
 }
