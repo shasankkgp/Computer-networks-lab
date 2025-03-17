@@ -9,6 +9,12 @@
 
 #define PORT 5500 
 
+// Color codes
+#define GREEN "\033[1;32m"
+#define BLUE "\033[1;34m"
+#define RED "\033[1;31m"
+#define RESET "\033[0m"
+
 int main(int argc, char *argv[]) {
     int sockfd; 
     struct sockaddr_in address;
@@ -30,14 +36,14 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    printf("Connected to server - Simulating bad client that repeatedly requests tasks\n");
+    printf("%sConnected to server - Simulating bad client that repeatedly requests tasks%s\n", GREEN, RESET);
     
     // Repeatedly request tasks without completing them
     int count = 0;
     char buffer[1024];
     
     while(count < 4) {  // We'll try to get 4 tasks (server should terminate us after 3)
-        printf("Requesting task #%d...\n", count + 1);
+        printf("%sRequesting task #%d...%s\n", BLUE, count + 1, RESET);
         write(sockfd, "GET_TASK", 8);
         count++;
         
@@ -46,16 +52,16 @@ int main(int argc, char *argv[]) {
         int ans = read(sockfd, buffer, sizeof(buffer)-1);
         if(ans > 0) {
             buffer[ans] = '\0';
-            printf("Received from server: %s\n", buffer);
+            printf("%sReceived from server: %s%s\n", BLUE, buffer, RESET);
             
             // Check if we've been terminated
             if(strncmp(buffer, "ERROR: Requested new task", 25) == 0) {
-                printf("Server terminated connection as expected after %d task requests.\n", count);
+                printf("%sServer terminated connection as expected after %d task requests.%s\n", GREEN, count, RESET);
                 break;
             }
         }
         
-        // Wait a bit before requesting the next task
+        // Wait a bit before requesting the next task  , RTT time in my implementation 
         sleep(2);
     }
     

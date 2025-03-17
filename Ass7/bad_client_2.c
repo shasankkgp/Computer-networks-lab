@@ -9,6 +9,12 @@
 
 #define PORT 5500 
 
+// Color codes
+#define GREEN "\033[1;32m"
+#define BLUE "\033[1;34m"
+#define RED "\033[1;31m"
+#define RESET "\033[0m"
+
 int main(int argc, char *argv[]) {
     int sockfd; 
     struct sockaddr_in address;
@@ -30,10 +36,10 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    printf("Connected to server - Simulating bad client that gets task but never responds\n");
+    printf("%sConnected to server - Simulating bad client that gets task but never responds%s\n", GREEN, RESET);
     
     // Request a task
-    printf("Requesting task...\n");
+    printf("%sRequesting task...%s\n", BLUE, RESET);
     write(sockfd, "GET_TASK", 8);
     
     // Read the task assignment
@@ -41,10 +47,10 @@ int main(int argc, char *argv[]) {
     int ans = read(sockfd, buffer, sizeof(buffer)-1);
     if(ans > 0) {
         buffer[ans] = '\0';
-        printf("Received from server: %s\n", buffer);
+        printf("%sReceived from server: %s%s\n", BLUE, buffer, RESET);
         
         // Now we'll wait without responding - server should timeout after 10 seconds
-        printf("Now waiting without responding (server should timeout after 10 seconds)...\n");
+        printf("%sNow waiting without responding (server should timeout after 10 seconds)...%s\n", BLUE, RESET);
         
         // Send periodic pings to keep connection alive but never send a result
         time_t start_time = time(NULL);
@@ -55,19 +61,19 @@ int main(int argc, char *argv[]) {
             ans = read(sockfd, buffer, sizeof(buffer)-1);
             if(ans > 0) {
                 buffer[ans] = '\0';
-                printf("Received from server: %s\n", buffer);
+                printf("%sReceived from server: %s%s\n", BLUE, buffer, RESET);
                 
                 // Check if we've been timed out
                 if(strncmp(buffer, "ERROR: Task timed out", 21) == 0) {
-                    printf("Server timed out the task as expected after %ld seconds.\n", 
-                          current_time - start_time);
+                    printf("%sServer timed out the task as expected after %ld seconds.%s\n", 
+                          GREEN, current_time - start_time, RESET);
                     break;
                 }
             }
             
             // Send ping every 5 seconds to keep connection alive
             if(current_time - start_time > 0 && (current_time - start_time) % 5 == 0) {
-                printf("Sending keep-alive PING at %ld seconds\n", current_time - start_time);
+                printf("%sSending keep-alive PING at %ld seconds%s\n", BLUE, current_time - start_time, RESET);
                 write(sockfd, "PING", 4);
                 sleep(1); // To avoid sending multiple pings at same second
             }
@@ -76,7 +82,7 @@ int main(int argc, char *argv[]) {
             
             // Exit after 15 seconds regardless
             if(current_time - start_time > 15) {
-                printf("Exiting after 15 seconds\n");
+                printf("%sExiting after 15 seconds%s\n", RED, RESET);
                 break;
             }
         }

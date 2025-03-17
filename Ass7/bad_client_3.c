@@ -9,6 +9,12 @@
 
 #define PORT 5500 
 
+// Color codes
+#define GREEN "\033[1;32m"
+#define BLUE "\033[1;34m"
+#define RED "\033[1;31m"
+#define RESET "\033[0m"
+
 int main(int argc, char *argv[]) {
     int sockfd; 
     struct sockaddr_in address;
@@ -30,10 +36,10 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    printf("Connected to server - Simulating bad client that connects but never sends commands\n");
+    printf("%sConnected to server - Simulating bad client that connects but never sends commands%s\n", GREEN, RESET);
     
     // Wait without sending any commands
-    printf("Now waiting without sending any commands (server should timeout after 30 seconds)...\n");
+    printf("%sNow waiting without sending any commands (server should timeout after 30 seconds)...%s\n", BLUE, RESET);
     
     char buffer[1024];
     time_t start_time = time(NULL);
@@ -45,13 +51,13 @@ int main(int argc, char *argv[]) {
         int ans = read(sockfd, buffer, sizeof(buffer)-1);
         if(ans > 0) {
             buffer[ans] = '\0';
-            printf("Received from server at %ld seconds: %s\n", 
-                  current_time - start_time, buffer);
+            printf("%sReceived from server at %ld seconds: %s%s\n", 
+                  BLUE, current_time - start_time, buffer, RESET);
             
             // Check if we've been timed out
             if(strncmp(buffer, "ERROR: Connection inactive", 25) == 0) {
-                printf("Server terminated connection as expected after %ld seconds.\n", 
-                      current_time - start_time);
+                printf("%sServer terminated connection as expected after %ld seconds.%s\n", 
+                      GREEN, current_time - start_time, RESET);
                 break;
             }
         }
@@ -60,7 +66,7 @@ int main(int argc, char *argv[]) {
         
         // Exit after 35 seconds regardless
         if(current_time - start_time > 35) {
-            printf("Exiting after 35 seconds\n");
+            printf("%sExiting after 35 seconds%s\n", RED, RESET);
             break;
         }
     }
