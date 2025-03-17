@@ -12,15 +12,21 @@
 
 #define PORT 5500 
 
+// Color codes
+#define GREEN "\033[1;32m"
+#define BLUE "\033[1;34m"
+#define RED "\033[1;31m"
+#define RESET "\033[0m"
+
 int main(int argc, char *argv[]) {
     if (argc != 2) {
-        fprintf(stderr, "Usage: %s <number_of_tasks>\n", argv[0]);
+        fprintf(stderr, RED "Usage: %s <number_of_tasks>" RESET "\n", argv[0]);
         return 1;
     }
 
     int total_tasks = atoi(argv[1]);
     if (total_tasks <= 0) {
-        fprintf(stderr, "Invalid number of tasks. Please provide a positive integer.\n");
+        fprintf(stderr, RED "Invalid number of tasks. Please provide a positive integer." RESET "\n");
         return 1;
     }
 
@@ -31,7 +37,7 @@ int main(int argc, char *argv[]) {
     // Create socket 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if(sockfd < 0) {
-        perror("socket failed");
+        perror(RED "socket failed" RESET);
         exit(EXIT_FAILURE);
     }
 
@@ -41,11 +47,11 @@ int main(int argc, char *argv[]) {
     address.sin_family = AF_INET;
 
     if(connect(sockfd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        perror("Connection failed");
+        perror(RED "Connection failed" RESET);
         exit(EXIT_FAILURE);
     }
 
-    printf("Connected to server\n");
+    printf(BLUE "Connected to server" RESET "\n");
     
     // Make socket non-blocking
     int flags = fcntl(sockfd, F_GETFL, 0);
@@ -58,7 +64,7 @@ int main(int argc, char *argv[]) {
     while(tasks_completed < total_tasks) {
         // If no task is pending, request a new one
         if(!task_pending) {
-            printf("Requesting task...\n");
+            printf(BLUE "Requesting task..." RESET "\n");
             write(sockfd, "GET_TASK", 8);
             task_pending = 1;
         }
@@ -68,38 +74,38 @@ int main(int argc, char *argv[]) {
         int ans = read(sockfd, buffer, sizeof(buffer)-1);
         if(ans > 0) {
             buffer[ans] = '\0'; 
-            printf("Received from server: %s\n", buffer);
+            printf(BLUE "Received from server: %s" RESET "\n", buffer);
 
             if(strncmp(buffer, "TERMINATE", 9) == 0) {
-                printf("Server requested termination. Exiting...\n");
+                printf(RED "Server requested termination. Exiting..." RESET "\n");
                 break;
             }
             
             if(strncmp(buffer, "No tasks available", 18) == 0) {
-                printf("No more tasks available. Exiting...\n");
+                printf(RED "No more tasks available. Exiting..." RESET "\n");
                 break;
             }
             
             if(strncmp(buffer, "ERROR", 5) == 0) {
                 if(strncmp(buffer, "ERROR: Task timed out", 21) == 0) {
-                    printf("Task timed out. Requesting new task...\n");
+                    printf(RED "Task timed out. Requesting new task..." RESET "\n");
                     task_pending = 0;
                 } else {
-                    printf("Error from server: %s\n", buffer);
+                    printf(RED "Error from server: %s" RESET "\n", buffer);
                 }
                 continue;
             }
             
             if(strncmp(buffer, "WARNING", 7) == 0) {
-                printf("Received warning: %s\n", buffer);
+                printf(RED "Received warning: %s" RESET "\n", buffer);
                 // Send a ping to keep connection alive
-                printf("Sending PING to keep connection alive\n");
+                printf(BLUE "Sending PING to keep connection alive" RESET "\n");
                 write(sockfd, "PING", 4);
                 continue;
             }
             
             if(strncmp(buffer, "PONG", 4) == 0) {
-                printf("Received PONG response\n");
+                printf(BLUE "Received PONG response" RESET "\n");
                 continue;
             }
 
@@ -115,14 +121,14 @@ int main(int argc, char *argv[]) {
                         case '*': result = a * b; break;
                         case '/':
                             if(b == 0) {
-                                printf("Error: Division by zero\n");
+                                printf(RED "Error: Division by zero" RESET "\n");
                                 task_pending = 0;
                                 continue;
                             }
                             result = a / b;
                             break;
                         default:
-                            printf("Unknown operation: %c\n", op);
+                            printf(RED "Unknown operation: %c" RESET "\n", op);
                             task_pending = 0;
                             continue;
                     }
@@ -130,29 +136,29 @@ int main(int argc, char *argv[]) {
                     // Send result immediately
                     char result_str[100];
                     sprintf(result_str, "RESULT %d", result);
-                    printf("Calculated result: %s (sending immediately)\n", result_str);
+                    printf(GREEN "Calculated result: %s (sending immediately)" RESET "\n", result_str);
                     
                     write(sockfd, result_str, strlen(result_str));
                     
                     tasks_completed++;
                     task_pending = 0;
                 } else {
-                    printf("Invalid task format\n");
+                    printf(RED "Invalid task format" RESET "\n");
                     task_pending = 0;
                 }
             }
         } else if(ans == 0) {
-            printf("Server closed connection\n");
+            printf(RED "Server closed connection" RESET "\n");
             break;
         } else if(errno != EAGAIN && errno != EWOULDBLOCK) {
-            perror("read failed");
+            perror(RED "read failed" RESET);
             break;
         }
 
         // Send periodic pings to keep connection alive (if idle for too long)
         time_t current_time = time(NULL);
         if(current_time - last_ping_time > 15) {  // Send ping every 15 seconds of inactivity
-            printf("Sending keep-alive PING\n");
+            printf(BLUE "Sending keep-alive PING" RESET "\n");
             write(sockfd, "PING", 4);
             last_ping_time = current_time;
         }
@@ -162,7 +168,7 @@ int main(int argc, char *argv[]) {
     }
     
     // Send exit message
-    printf("Sending proper exit message\n");
+    printf(BLUE "Sending proper exit message" RESET "\n");
     write(sockfd, "exit", 4);
     
     close(sockfd);
