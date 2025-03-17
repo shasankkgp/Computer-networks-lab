@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include <errno.h>
+#include <fcntl.h>  // Added for fcntl() function and flags
 
 #define PORT 5500 
 
@@ -46,9 +47,20 @@ int main(int argc, char *argv[]) {
 
     printf("Connected to server\n");
     
-    for(int i = 0; i < total_tasks; i++) {
-        printf("Requesting task...\n");
-        write(sockfd, "GET_TASK", 8);
+    // Make socket non-blocking
+    int flags = fcntl(sockfd, F_GETFL, 0);
+    fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+    
+    int tasks_completed = 0;
+    int task_pending = 0;
+    
+    while(tasks_completed < total_tasks) {
+        // If no task is pending, request a new one
+        if(!task_pending) {
+            printf("Requesting task...\n");
+            write(sockfd, "GET_TASK", 8);
+            task_pending = 1;
+        }
 
         // Read response 
         char buffer[1024];
@@ -57,39 +69,68 @@ int main(int argc, char *argv[]) {
             buffer[ans] = '\0'; 
             printf("Received from server: %s\n", buffer);
 
+            if(strncmp(buffer, "TERMINATE", 9) == 0) {
+                printf("Server requested termination. Exiting...\n");
+                break;
+            }
+            
             if(strncmp(buffer, "No tasks available", 18) == 0) {
                 printf("No more tasks available. Exiting...\n");
                 break;
             }
+            
+            if(strncmp(buffer, "ERROR", 5) == 0) {
+                if(strncmp(buffer, "ERROR: Task timed out", 21) == 0) {
+                    printf("Task timed out. Requesting new task...\n");
+                    task_pending = 0;
+                } else {
+                    printf("Error from server: %s\n", buffer);
+                }
+                continue;
+            }
 
             // Process task 
-            int a, b;
-            char op;
-            if(sscanf(buffer, "TASK %d %c %d", &a, &op, &b) == 3) {
-                int result;
-                switch(op) {
-                    case '+': result = a + b; break;
-                    case '-': result = a - b; break;
-                    case '*': result = a * b; break;
-                    case '/':
-                        if(b == 0) {
-                            printf("Error: Division by zero\n");
+            if(strncmp(buffer, "TASK", 4) == 0) {
+                int a, b;
+                char op;
+                if(sscanf(buffer + 5, "%d %c %d", &a, &op, &b) == 3) {
+                    int result;
+                    switch(op) {
+                        case '+': result = a + b; break;
+                        case '-': result = a - b; break;
+                        case '*': result = a * b; break;
+                        case '/':
+                            if(b == 0) {
+                                printf("Error: Division by zero\n");
+                                task_pending = 0;
+                                continue;
+                            }
+                            result = a / b;
+                            break;
+                        default:
+                            printf("Unknown operation: %c\n", op);
+                            task_pending = 0;
                             continue;
-                        }
-                        result = a / b;
-                        break;
-                    default:
-                        printf("Unknown operation: %c\n", op);
-                        continue;
-                }
+                    }
 
-                // Send result 
-                char result_str[100];
-                sprintf(result_str, "RESULT %d", result);
-                printf("Sending result: %s\n", result_str);
-                // write(sockfd, result_str, strlen(result_str));
-            } else {
-                printf("Invalid task format\n");
+                    // Calculate result but don't send it
+                    char result_str[100];
+                    sprintf(result_str, "RESULT %d", result);
+                    printf("Calculated result: %s (not sending)\n", result_str);
+                    
+                    // Wait for server timeout (at least 12 seconds to see full countdown)
+                    printf("Waiting for server timeout...\n");
+                    sleep(12);
+                    
+                    
+                    // write(sockfd, result_str, strlen(result_str));
+                    
+                    tasks_completed++;
+                    task_pending = 0;
+                } else {
+                    printf("Invalid task format\n");
+                    task_pending = 0;
+                }
             }
         } else if(ans == 0) {
             printf("Server closed connection\n");
@@ -99,8 +140,12 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        sleep(1);  // Send GET_TASK every 1 second
+        // Add a small delay to avoid busy waiting
+        usleep(100000);  // 100ms delay
     }
+    
+    // Send exit message
+    write(sockfd, "exit", 4);
     
     close(sockfd);
     return 0;
