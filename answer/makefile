@@ -1,25 +1,42 @@
-CC := gcc
-send_ip := 127.0.0.1
-send_port := 8080
-receive_ip := 127.0.0.1
-receive_port := 9090
-inputfile := input.txt
-outputfile := output.txt
+.PHONY: all server client dummy1 dummy2 dummy3 dummy4 clean
 
-libname := ksocket
+all: server client dummy1 dummy2 dummy3 dummy4
 
-all: libksocket.a
-	$(CC) -o user1 user1.c -L. -lksocket 
-	$(CC) -o user2 user2.c -L. -lksocket 
-libksocket.a: k_socket.c k_socket.h
-	$(CC) -Wall -c k_socket.c
-	ar rcs libksocket.a k_socket.o
+server: server.c
+	gcc -o server server.c 
 
-run_user2: 
-	./user2 $(receive_ip) $(receive_port) $(send_ip) $(send_port) $(outputfile)
+client: client.c
+	gcc -o client client.c
 
-run_user1:
-	./user1 $(send_ip) $(send_port) $(receive_ip) $(receive_port) $(inputfile)
+dummy1: bad_client_1.c
+	gcc -o dummy1 bad_client_1.c 
+
+dummy2: bad_client_2.c
+	gcc -o dummy2 bad_client_2.c 
+
+dummy3: bad_client_3.c
+	gcc -o dummy3 bad_client_3.c 
+
+dummy4: bad_client_4.c
+	gcc -o dummy4 bad_client_4.c 
+
+run_server:
+	./server
+
+run_client:
+	./client 5
+
+run_dummy1:
+	./dummy1
+
+run_dummy2:
+	./dummy2
+
+run_dummy3:
+	./dummy3
+
+run_dummy4:
+	./dummy4
 
 clean:
-	rm user1 user2 $(outputfile) libksocket.a k_socket.o
+	rm -f server client dummy1 dummy2 dummy3 dummy4
