@@ -182,7 +182,7 @@ int main(int argc, char *argv[]) {
                 continue;
             }
             strcpy(domain, at_sign + 1);
-            if (!connected && strcpy(domain, current_domain) != 0) {
+            if (!connected && strcmp(domain, current_domain) != 0) {
                 printf("Error: You must first connect with HELO command\n");
                 continue;
             }
@@ -209,7 +209,7 @@ int main(int argc, char *argv[]) {
                 continue;
             }
             strcpy(domain, at_sign + 1);
-            if (!connected && strcpy(domain, current_domain) != 0) {
+            if (!connected && strcmp(domain, current_domain) != 0) {
                 printf("Error: You must first connect with HELO command\n");
                 continue;
             }
@@ -236,7 +236,7 @@ int main(int argc, char *argv[]) {
                 continue;
             }
             strcpy(domain, at_sign + 1);
-            if (!connected && strcpy(domain, current_domain) != 0) {
+            if (!connected && strcmp(domain, current_domain) != 0) {
                 printf("Error: You must first connect with HELO command\n");
                 continue;
             }
@@ -281,7 +281,7 @@ int main(int argc, char *argv[]) {
                 continue;
             }
             strcpy(domain, at_sign + 1);
-            if (!connected && strcpy(domain, current_domain) != 0) {
+            if (!connected && strcmp(domain, current_domain) != 0) {
                 printf("Error: You must first connect with HELO command\n");
                 continue;
             }
@@ -323,7 +323,7 @@ int main(int argc, char *argv[]) {
                 continue;
             }
             strcpy(domain, at_sign + 1);
-            if (!connected && strcpy(domain, current_domain) != 0) {
+            if (!connected && strcmp(domain, current_domain) != 0) {
                 printf("Error: You must first connect with HELO command\n");
                 continue;
             }
