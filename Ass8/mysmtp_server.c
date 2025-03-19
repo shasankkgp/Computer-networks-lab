@@ -53,11 +53,11 @@ void extract_username(const char *email, char *username, int size) {
 // Save a new email to the recipient's mailbox
 void save_email(const char *recipient, const char *sender, const char *data) {
     // Extract username from recipient email
-    char username[100];
-    extract_username(recipient, username, sizeof(username));
+    // char username[100];
+    // extract_username(recipient, username, sizeof(username));
     
     char mailbox_path[BUFFER_SIZE];
-    snprintf(mailbox_path, sizeof(mailbox_path), "%s%s.txt", MAILBOX_PATH, username);
+    snprintf(mailbox_path, sizeof(mailbox_path), "%s%s.txt", MAILBOX_PATH, recipient);
     
     // Get current date
     char date[20];
@@ -78,7 +78,7 @@ void list_emails(int clientfd, const char *recipient) {
     extract_username(recipient, username, sizeof(username));
     
     char mailbox_path[BUFFER_SIZE];
-    snprintf(mailbox_path, sizeof(mailbox_path), "%s%s.txt", MAILBOX_PATH, username);
+    snprintf(mailbox_path, sizeof(mailbox_path), "%s%s.txt", MAILBOX_PATH, recipient);
     
     FILE *file = fopen(mailbox_path, "r");
     if (!file) {
@@ -108,8 +108,7 @@ void list_emails(int clientfd, const char *recipient) {
                 send_response(clientfd, mail_info);
                 
                 // Skip until end of mail marker
-                while (fgets(line, sizeof(line), file) && 
-                       strncmp(line, "----END_OF_MAIL----", 19) != 0) {
+                while (fgets(line, sizeof(line), file) && strncmp(line, "----END_OF_MAIL----", 19) != 0) {
                     // Do nothing, just consuming lines
                 }
             }
@@ -128,7 +127,7 @@ void get_email(int clientfd, const char *recipient, int mail_id) {
     extract_username(recipient, username, sizeof(username));
     
     char mailbox_path[BUFFER_SIZE];
-    snprintf(mailbox_path, sizeof(mailbox_path), "%s%s.txt", MAILBOX_PATH, username);
+    snprintf(mailbox_path, sizeof(mailbox_path), "%s%s.txt", MAILBOX_PATH, recipient);
     
     FILE *file = fopen(mailbox_path, "r");
     if (!file) {
@@ -282,7 +281,7 @@ void handle_client(int clientfd) {
                 continue;
             }
             
-            send_response(clientfd, "354 Start mail input; end with '.' on a line\n");
+            send_response(clientfd, "200 OK\n");
             
             // Clear mail data buffer
             memset(mail_data, 0, sizeof(mail_data));
