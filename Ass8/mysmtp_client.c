@@ -16,6 +16,10 @@ Roll number: 22CS10025
 
 #define BUFFER_SIZE 1024
 
+// Global variables to track connection state
+int connected = 0;  // Flag to track if HELO command has been sent successfully
+char current_domain[100] = "";  // Store the domain for consistency
+
 // Function to read server responses
 void read_response(int sockfd, char *response, size_t size) {
     memset(response, 0, size);
@@ -25,11 +29,13 @@ void read_response(int sockfd, char *response, size_t size) {
         printf("%s", response);
     } else {
         printf("Error reading server response.\n");
+        // Don't exit here as we want to allow the user to retry
     }
 }
 
 // Function to send a command and read the response
 void send_command(int sockfd, const char *command, char *response, size_t size) {
+    printf("Sending: %s", command); // Debug print
     write(sockfd, command, strlen(command));
     read_response(sockfd, response, size);
 }
@@ -49,6 +55,12 @@ int main(int argc, char *argv[]) {
         perror("Socket creation failed");
         exit(1);
     }
+
+    // Set socket timeout to prevent hanging
+    struct timeval tv;
+    tv.tv_sec = 10;  // 10 second timeout
+    tv.tv_usec = 0;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
 
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
@@ -92,11 +104,26 @@ int main(int argc, char *argv[]) {
                 
                 snprintf(command, sizeof(command), "HELO %s\n", domain);
                 send_command(sockfd, command, response, sizeof(response));
+                
+                // Check if response was successful
+                if (strncmp(response, "200", 3) == 0) {
+                    connected = 1;
+                    strcpy(current_domain, domain); // Store domain for later use
+                    printf("Successfully connected to domain: %s\n", domain);
+                } else {
+                    printf("Failed to connect to domain. Please try again.\n");
+                }
                 break;
             }
 
             case '2': {
-                char sender[100], receiver[100];
+                // Check if connected with HELO before proceeding
+                if (!connected) {
+                    printf("Error: You must first connect with HELO command (option 1)\n");
+                    break;
+                }
+
+                char sender[200], receiver[100];
                 char command[BUFFER_SIZE];
                 
                 // MAIL FROM
@@ -104,11 +131,24 @@ int main(int argc, char *argv[]) {
                 fgets(sender, sizeof(sender), stdin);
                 sender[strcspn(sender, "\n")] = 0; // Remove newline
                 
+                // Check if the sender has @ - if not, append the domain
+                if (strchr(sender, '@') == NULL) {
+                    char temp[100];
+                    strcpy(temp, sender);
+                    if (strlen(temp) + strlen(current_domain) + 1 < sizeof(sender)) {
+                        snprintf(sender, sizeof(sender), "%s@%s", temp, current_domain);
+                    } else {
+                        printf("Error: Email address too long\n");
+                        // Handle the error appropriately
+                    }
+                    printf("Using full email: %s\n", sender);
+                }
+                
                 snprintf(command, sizeof(command), "MAIL FROM: %s\n", sender);
                 send_command(sockfd, command, response, sizeof(response));
                 
                 if (strncmp(response, "200", 3) != 0) {
-                    printf("Error setting sender. Try again.\n");
+                    printf("Error in MAIL FROM command. Please try again.\n");
                     continue;
                 }
                 
@@ -117,16 +157,34 @@ int main(int argc, char *argv[]) {
                 fgets(receiver, sizeof(receiver), stdin);
                 receiver[strcspn(receiver, "\n")] = 0; // Remove newline
                 
+                // Check if the receiver has @ - if not, append the domain
+                if (strchr(receiver, '@') == NULL) {
+                    char temp[100];
+                    strcpy(temp, receiver);
+                    if (strlen(temp) + strlen(current_domain) + 1 < sizeof(sender)) {
+                        snprintf(sender, sizeof(sender), "%s@%s", temp, current_domain);
+                    } else {
+                        printf("Error: Email address too long\n");
+                        // Handle the error appropriately
+                    }
+                    printf("Using full email: %s\n", receiver);
+                }
+                
                 snprintf(command, sizeof(command), "RCPT TO: %s\n", receiver);
                 send_command(sockfd, command, response, sizeof(response));
                 
                 if (strncmp(response, "200", 3) != 0) {
-                    printf("Error setting recipient. Try again.\n");
+                    printf("Error in RCPT TO command. Please try again.\n");
                     continue;
                 }
                 
                 // DATA
                 send_command(sockfd, "DATA\n", response, sizeof(response));
+                
+                if (strncmp(response, "354", 3) != 0) {
+                    printf("Error in DATA command. Please try again.\n");
+                    continue;
+                }
                 
                 printf("Enter your message (end with a single dot '.' on a new line):\n");
                 
@@ -147,23 +205,75 @@ int main(int argc, char *argv[]) {
             }
 
             case '3': {
+                // Check if connected with HELO before proceeding
+                if (!connected) {
+                    printf("Error: You must first connect with HELO command (option 1)\n");
+                    break;
+                }
+
                 char email[100], command[120];
+                char sender[200];
+                char reciever[100];
                 
                 printf("Enter email to view inbox: ");
                 fgets(email, sizeof(email), stdin);
                 email[strcspn(email, "\n")] = 0; // Remove newline
                 
+                // Check if the email has @ - if not, append the domain
+                if (strchr(email, '@') == NULL && connected) {
+                    char temp[100];
+                    strcpy(temp, email);
+                    if (strlen(temp) + strlen(current_domain) + 1 < sizeof(sender)) {
+                        snprintf(sender, sizeof(sender), "%s@%s", temp, current_domain);
+                    } else {
+                        printf("Error: Email address too long\n");
+                        // Handle the error appropriately
+                    }
+                    printf("Using full email: %s\n", email);
+                }
+                
                 snprintf(command, sizeof(command), "LIST %s\n", email);
                 send_command(sockfd, command, response, sizeof(response));
+
+                if( strncmp(response , "200" , 3) == 0 ){
+                    // need to read the response multiple times
+                    while (1) {
+                        read_response(sockfd, response, sizeof(response));
+                        if (strncmp(response, "200", 3) == 0) {
+                            break;
+                        }
+                    }
+                }
                 break;
             }
 
             case '4': {
+                // Check if connected with HELO before proceeding
+                if (!connected) {
+                    printf("Error: You must first connect with HELO command (option 1)\n");
+                    break;
+                }
+
                 char email[100], mail_id[10], command[120];
+                char sender[200];
+                char reciever[100];
                 
                 printf("Enter email: ");
                 fgets(email, sizeof(email), stdin);
                 email[strcspn(email, "\n")] = 0; // Remove newline
+                
+                // Check if the email has @ - if not, append the domain
+                if (strchr(email, '@') == NULL && connected) {
+                    char temp[100];
+                    strcpy(temp, email);
+                    if (strlen(temp) + strlen(current_domain) + 1 < sizeof(sender)) {
+                        snprintf(sender, sizeof(sender), "%s@%s", temp, current_domain);
+                    } else {
+                        printf("Error: Email address too long\n");
+                        // Handle the error appropriately
+                    }
+                    printf("Using full email: %s\n", email);
+                }
                 
                 printf("Enter mail ID: ");
                 fgets(mail_id, sizeof(mail_id), stdin);
@@ -171,12 +281,21 @@ int main(int argc, char *argv[]) {
                 
                 snprintf(command, sizeof(command), "GET_MAIL %s %s\n", email, mail_id);
                 send_command(sockfd, command, response, sizeof(response));
+                // need to get the from , date , data  untill 200 OK
+                while(1){
+                    read_response(sockfd, response, sizeof(response));
+                    if (strncmp(response, "200", 3) == 0) {
+                        break;
+                    }
+                }
+                
                 break;
             }
 
             case '5': {
                 send_command(sockfd, "QUIT\n", response, sizeof(response));
                 close(sockfd);
+                printf("Connection closed. Goodbye!\n");
                 exit(0);
             }
 
@@ -184,6 +303,40 @@ int main(int argc, char *argv[]) {
                 printf("Invalid choice. Please try again.\n");
         }
     }
+
+    // while(1){
+    //     printf(">");
+    //     char command[100];
+    //     fgets(command, sizeof(command), stdin);
+    //     command[strcspn(command, "\n")] = 0; // Remove newline
+    //     // commands are 
+    //     // HELO <domain>
+    //     // MAIL FROM: <email>
+    //     // RCPT TO: <email>
+    //     // DATA
+    //     // LIST <email>
+    //     // GET_MAIL <email> <mail_id>
+    //     // QUIT
+    //     if (strncmp(command, "HELO", 4) == 0) {
+            
+    //     } else if (strncmp(command, "MAIL FROM:", 10) == 0) {
+            
+    //     } else if (strncmp(command, "RCPT TO:", 8) == 0) {
+            
+    //     } else if (strncmp(command, "DATA", 4) == 0) {
+            
+    //     } else if (strncmp(command, "LIST", 4) == 0) {
+            
+    //     } else if (strncmp(command, "GET_MAIL", 8) == 0) {
+            
+    //     } else if (strncmp(command, "QUIT", 4) == 0) {
+    //         send_command(sockfd, command, response, sizeof(response));
+    //         close(sockfd);
+    //         exit(0);
+    //     } else {
+    //         // Invalid command, code should come from server
+    //     }
+    // }
 
     close(sockfd);
     return 0;

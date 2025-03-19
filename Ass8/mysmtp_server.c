@@ -39,10 +39,25 @@ void ensure_mailbox_dir() {
     }
 }
 
+// Extract username from email address (before the @)
+void extract_username(const char *email, char *username, int size) {
+    strncpy(username, email, size);
+    username[size-1] = '\0';  // Ensure null-termination
+    
+    char *at_sign = strchr(username, '@');
+    if (at_sign) {
+        *at_sign = '\0';  // Truncate at the @ sign
+    }
+}
+
 // Save a new email to the recipient's mailbox
 void save_email(const char *recipient, const char *sender, const char *data) {
+    // Extract username from recipient email
+    char username[100];
+    extract_username(recipient, username, sizeof(username));
+    
     char mailbox_path[BUFFER_SIZE];
-    snprintf(mailbox_path, sizeof(mailbox_path), "%s%s.txt", MAILBOX_PATH, recipient);
+    snprintf(mailbox_path, sizeof(mailbox_path), "%s%s.txt", MAILBOX_PATH, username);
     
     // Get current date
     char date[20];
@@ -58,8 +73,12 @@ void save_email(const char *recipient, const char *sender, const char *data) {
 
 // List all emails for a given recipient
 void list_emails(int clientfd, const char *recipient) {
+    // Extract username from recipient email
+    char username[100];
+    extract_username(recipient, username, sizeof(username));
+    
     char mailbox_path[BUFFER_SIZE];
-    snprintf(mailbox_path, sizeof(mailbox_path), "%s%s.txt", MAILBOX_PATH, recipient);
+    snprintf(mailbox_path, sizeof(mailbox_path), "%s%s.txt", MAILBOX_PATH, username);
     
     FILE *file = fopen(mailbox_path, "r");
     if (!file) {
@@ -96,14 +115,20 @@ void list_emails(int clientfd, const char *recipient) {
             }
         }
     }
+
+    send_response(clientfd,"200 OK\n");    // to indicate end of list
     
     fclose(file);
 }
 
 // Get a specific email by ID
 void get_email(int clientfd, const char *recipient, int mail_id) {
+    // Extract username from recipient email
+    char username[100];
+    extract_username(recipient, username, sizeof(username));
+    
     char mailbox_path[BUFFER_SIZE];
-    snprintf(mailbox_path, sizeof(mailbox_path), "%s%s.txt", MAILBOX_PATH, recipient);
+    snprintf(mailbox_path, sizeof(mailbox_path), "%s%s.txt", MAILBOX_PATH, username);
     
     FILE *file = fopen(mailbox_path, "r");
     if (!file) {
@@ -129,6 +154,7 @@ void get_email(int clientfd, const char *recipient, int mail_id) {
                        strncmp(line, "----END_OF_MAIL----", 19) != 0) {
                     send_response(clientfd, line);
                 }
+                send_response(clientfd,"200 OK\n");
                 break;
             } else {
                 // Skip until end of mail marker
@@ -153,6 +179,8 @@ void handle_client(int clientfd) {
     char sender[100] = "";
     char recipient[100] = "";
     char mail_data[BUFFER_SIZE * 10] = ""; // Larger buffer for email content
+    char domain[100] = "";    // for one connection we need to store the domain name
+    int helo_received = 0;    // Flag to track if HELO has been received
     
     send_response(clientfd, "220 My_SMTP Server Ready\n");
     
@@ -171,9 +199,9 @@ void handle_client(int clientfd) {
         
         // HELO Command
         if (strncmp(buffer, "HELO", 4) == 0) {
-            char domain[100];
             if (sscanf(buffer, "HELO %s", domain) == 1) {
                 printf("HELO received from domain %s\n", domain);
+                helo_received = 1;
                 send_response(clientfd, "200 OK\n");
             } else {
                 send_response(clientfd, "400 ERR Invalid command syntax\n");
@@ -182,9 +210,29 @@ void handle_client(int clientfd) {
         
         // MAIL FROM Command
         else if (strncmp(buffer, "MAIL FROM:", 10) == 0 || strncmp(buffer, "MAIL FROM: ", 11) == 0) {
+            // Check if HELO has been received
+            if (!helo_received) {
+                send_response(clientfd, "400 ERR HELO command required first\n");
+                continue;
+            }
+            
             if (sscanf(buffer, "%*[^:]: %s", sender) == 1) {
                 printf("MAIL FROM: %s\n", sender);
-                send_response(clientfd, "200 OK\n");
+                
+                // Check if sender contains @ and extract domain
+                char *at_sign = strchr(sender, '@');
+                if (at_sign == NULL) {
+                    send_response(clientfd, "400 ERR Invalid email format\n");
+                    continue;
+                }
+                
+                char *sender_domain = at_sign + 1;
+                if (strcmp(sender_domain, domain) != 0) {
+                    send_response(clientfd, "400 ERR Invalid domain\n");
+                    continue;
+                } else {
+                    send_response(clientfd, "200 OK\n");
+                }
             } else {
                 send_response(clientfd, "400 ERR Invalid command syntax\n");
             }
@@ -192,10 +240,36 @@ void handle_client(int clientfd) {
         
         // RCPT TO Command
         else if (strncmp(buffer, "RCPT TO:", 8) == 0 || strncmp(buffer, "RCPT TO: ", 9) == 0) {
+            // Check if HELO has been received
+            if (!helo_received) {
+                send_response(clientfd, "400 ERR HELO command required first\n");
+                continue;
+            }
+            
+            // Check if MAIL FROM has been received
+            if (strlen(sender) == 0) {
+                send_response(clientfd, "400 ERR MAIL FROM command required first\n");
+                continue;
+            }
+            
             if (sscanf(buffer, "%*[^:]: %s", recipient) == 1) {
                 printf("RCPT TO: %s\n", recipient);
-                ensure_mailbox_dir(); // Make sure mailbox directory exists
-                send_response(clientfd, "200 OK\n");
+                
+                // Check if recipient contains @ and extract domain
+                char *at_sign = strchr(recipient, '@');
+                if (at_sign == NULL) {
+                    send_response(clientfd, "400 ERR Invalid email format\n");
+                    continue;
+                }
+                
+                char *recipient_domain = at_sign + 1;
+                if (strcmp(recipient_domain, domain) != 0) {
+                    send_response(clientfd, "400 ERR Invalid domain\n");
+                    continue;
+                } else {
+                    ensure_mailbox_dir(); // Make sure mailbox directory exists
+                    send_response(clientfd, "200 OK\n");
+                }
             } else {
                 send_response(clientfd, "400 ERR Invalid command syntax\n");
             }
@@ -243,6 +317,10 @@ void handle_client(int clientfd) {
             save_email(recipient, sender, mail_data);
             printf("Email from %s to %s saved.\n", sender, recipient);
             send_response(clientfd, "200 Message stored successfully\n");
+            
+            // Reset sender and recipient for next email
+            memset(sender, 0, sizeof(sender));
+            memset(recipient, 0, sizeof(recipient));
         }
         
         // LIST Command
