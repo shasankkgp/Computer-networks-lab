@@ -1,0 +1,44 @@
+We have three message types 
+    1. 0x01 : HELLO( used to announce the node is active)
+    2. 0x02 : QUERY ( request for meta data )
+    3. 0x03 : RESPONSE ( response to the query )
+
+Each message header should include:
+    1. Message type (4 byte)
+    2. Payload length (2 bytes)
+    3. Source IP (4 bytes)    // already there in IP header
+    4. Destination IP (4 bytes)     // already there in IP header
+    5. Transaction ID (4 bytes)
+    6. Reserved (1 byte)
+    7. Checksum (2 bytes)
+    9. System time (4 bytes)
+    10. hostname length ( 2 bytes)
+    11. CPU load (4 bytes)
+    12. Memory usage (4 bytes)
+
+So i have created custom header which comtains:
+    1. Message type
+    2. Payload length 
+    3. Transaction ID
+    4. Reserved
+    5. Checksum
+    6. System time
+    7. Hostname length
+    8. CPU load
+    9. Memory usage
+
+And i will add the IP header to my header while creating the package
+
+Layout of the message:
+    +-------------------------------------------------------+
+    | Custom header | IP header | Hostname string | Payload |
+    +-------------------------------------------------------+
+
+The application level performance counters that i have considered in my implementation are 
+1. Host name 
+2. CPU load
+3. Memory usage 
+
+The server broadcasts HELLO indicating that it is active
+The client broadcasts single query requesting all 3 components
+Each active server responds with response to the client

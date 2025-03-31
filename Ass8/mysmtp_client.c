@@ -97,7 +97,13 @@ int parse_command(char *cmd_str, char *tokens[], int max_tokens) {
 
 // Function to check if an email is properly formatted with domain part
 int is_valid_email(const char *email) {
-    return strchr(email, '@') != NULL;
+    const char *at_sign = strchr(email, '@');
+    if (!at_sign) return 0;
+    
+    // Check if there's something before and after @
+    if (at_sign == email || *(at_sign + 1) == '\0') return 0;
+    
+    return 1;
 }
 
 // Function to validate domain consistency

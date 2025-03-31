@@ -1,8 +1,0 @@
-This server handles all the cases like 
-
-1. If the server is repeatedly sending GET_TASK's, the server will terminate it after 3 unfinished GET_TASK's.
-2. If the server just taking task and not responding with result, it will terminate after 10 seconds and the 
-    task will be assigned to another client .
-3. If the server just conected and not responding, server will wait for 30 sec and send the warning msg for 
-    every 5 sec , after 30 sec it will terminate .
-4. If the server disconnects abruptly, server will assign the tasks that cleint has been assigned to .
