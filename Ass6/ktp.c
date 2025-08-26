@@ -1,14 +1,9 @@
-// Name - S.Rishabh
-// Roll number - 22CS10058
-
 #include "ktp.h"
 
 int k_socket(int __domain, int __type, int __protocol) {
 
-    // Check for free space in shared memory
     int sockid = -1;
 
-    // Connect to shared memory
     int shmid = shmget(UNIQUE_NUMBER, MAX_SOCKET_COUNT*sizeof(shmktp), 0777);
     int semid = semget(SEM_UNIQUE_KEY, MAX_SOCKET_COUNT*2, 0777);
     shmktp * addr = (shmktp *) shmat(shmid, NULL, 0);

@@ -45,8 +45,6 @@ struct rwnd {
 };
 
 typedef struct rwnd rrwnd;
-
-// Shared memory data structure
 struct shared_memory_ktp {
     int isfree;
     int proc_id;

@@ -1,11 +1,3 @@
-// Name - S.Rishabh
-// Roll number - 22CS10058
-
-/*
-TO BE IMPLEMENTED/RECTIFIED -
-    -> Error messages
-*/
-
 #include "ktp_structures.h"
 
 void __close_ktp__();
